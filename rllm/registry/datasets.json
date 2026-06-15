@@ -770,6 +770,53 @@
       "eval_split": "test",
       "default_agent": "mini-swe-agent"
     },
+    "swegym": {
+      "description": "SWE-Gym: 2,438 Python SWE tasks across 11 repos (getmoto, mypy, dvc, MONAI, pydantic, dask, conan, hydra, pandas, modin, bokeh), pre-built OpenHands testbed images at xingyaoww/sweb.eval.x86_64.* (F2P/P2P pytest grading; requires swegym package at build time)",
+      "source": "SWE-Gym/SWE-Gym",
+      "builder": "rllm.data.swegym_builder:build_benchmark",
+      "category": "code",
+      "splits": [
+        "train"
+      ],
+      "eval_split": "train",
+      "train_split": "train",
+      "default_agent": "mini-swe-agent"
+    },
+    "swegym_lite": {
+      "description": "SWE-Gym Lite: 230-row held-out eval cut of SWE-Gym (same schema and image namespace, smaller for fast iteration)",
+      "source": "SWE-Gym/SWE-Gym-Lite",
+      "builder": "rllm.data.swegym_builder:build_benchmark",
+      "category": "code",
+      "splits": [
+        "train"
+      ],
+      "eval_split": "train",
+      "default_agent": "mini-swe-agent"
+    },
+    "r2egym": {
+      "description": "R2E-Gym Subset: 4,578 Python SWE tasks across 12 repos (aiohttp, orange3, numpy, pandas, pillow, scrapy, ...), per-instance Docker images at namanjain12/* with bundled /r2e_tests/ runner (pytest-output equality against expected_output_json)",
+      "source": "R2E-Gym/R2E-Gym-Subset",
+      "builder": "rllm.data.r2egym_builder:build_benchmark",
+      "category": "code",
+      "splits": [
+        "train"
+      ],
+      "eval_split": "train",
+      "train_split": "train",
+      "default_agent": "mini-swe-agent"
+    },
+    "r2egym_lite": {
+      "description": "R2E-Gym Lite: ~11.8K rows across train + dev_*pr_v* splits (3.66 GB total), same image namespace and verifier as r2egym",
+      "source": "R2E-Gym/R2E-Gym-Lite",
+      "builder": "rllm.data.r2egym_builder:build_benchmark",
+      "category": "code",
+      "splits": [
+        "train"
+      ],
+      "eval_split": "train",
+      "train_split": "train",
+      "default_agent": "mini-swe-agent"
+    },
     "omnidocbench": {
       "description": "OmniDocBench: Comprehensive document understanding benchmark with structured eval",
       "source": "rwood-97/english_OmniDocBench_with_eval",

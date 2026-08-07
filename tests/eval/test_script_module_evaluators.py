@@ -31,8 +31,10 @@ class _FakeSandbox:
     ``test -f``/``cat`` shell commands the evaluator runs.
     """
 
-    def __init__(self, files: dict[str, str] | None = None):
+    def __init__(self, files: dict[str, str] | None = None, blobs: dict[str, bytes] | None = None):
         self.files: dict[str, str] = dict(files or {})
+        # Binary payloads reachable via upload_file/download_file (artifacts).
+        self.blobs: dict[str, bytes] = dict(blobs or {})
         self.execs: list[tuple[str, str | None]] = []
         self.uploads: list[tuple[str, str]] = []
 
@@ -50,6 +52,15 @@ class _FakeSandbox:
 
     def upload_dir(self, src: str, dst: str) -> None:
         self.uploads.append((src, dst))
+
+    def upload_file(self, local_path: str, remote_path: str) -> None:
+        with open(local_path, "rb") as f:
+            self.blobs[remote_path] = f.read()
+
+    def download_file(self, remote_path: str) -> bytes:
+        if remote_path not in self.blobs:
+            raise FileNotFoundError(remote_path)
+        return self.blobs[remote_path]
 
 
 def _episode() -> Episode:
@@ -580,22 +591,12 @@ class TestSeparateVerifierEnvironment:
         assert verifier.closed, "the verifier box must not outlive the grade"
 
     def test_collect_runs_in_the_agent_box_and_artifact_lands_in_the_verifier(self, tmp_path):
-        agent = _FakeSandbox(files={})
+        # Binary, and not valid UTF-8: `git diff --binary` output is why the
+        # transfer uses the backend's native primitive rather than exec stdout.
+        patch = b"diff --git a/x b/x\n\x00\xff\x01binary"
+        agent = _FakeSandbox(files={}, blobs={"/logs/artifacts/model.patch": patch})
         verifier = _FakeSandbox(files={"/logs/verifier/reward.txt": "1.0"})
         verifier.close = lambda: None
-
-        import base64 as _b64
-
-        real_agent_exec = agent.exec
-
-        def agent_exec(cmd: str, timeout: float | None = None, user: str | None = None) -> str:
-            if cmd.startswith("test -f /logs/artifacts/model.patch"):
-                return "7"
-            if cmd.startswith("base64 "):
-                return _b64.b64encode(b"PATCH!!").decode()
-            return real_agent_exec(cmd, timeout, user)
-
-        agent.exec = agent_exec
 
         ev = ShellScriptEvaluator(
             sandbox=agent,
@@ -606,8 +607,25 @@ class TestSeparateVerifierEnvironment:
         ev.evaluate(self._task(tmp_path), _episode())
 
         assert any("git diff --binary" in c for c, _ in agent.execs), "collect must run in the agent's box"
-        wrote = [c for c, _ in verifier.execs if "/logs/artifacts/model.patch" in c and "base64 -d" in c]
-        assert wrote, "the collected artifact must be re-materialised in the verifier box"
+        assert verifier.blobs.get("/logs/artifacts/model.patch") == patch, "artifact must arrive byte-identical"
+
+    def test_a_missing_artifact_is_not_fatal(self, tmp_path):
+        """A collect step that produced nothing leaves the artifact absent; the
+        verifier reports that as an unsubmitted patch, not a grading crash."""
+        agent = _FakeSandbox(files={})  # no blobs -> download_file raises FileNotFoundError
+        verifier = _FakeSandbox(files={"/logs/verifier/reward.txt": "0.0"})
+        verifier.close = lambda: None
+
+        ev = ShellScriptEvaluator(
+            sandbox=agent,
+            verifier_sandbox_factory=lambda: verifier,
+            collect_commands=[{"command": "true"}],
+            artifacts=["/logs/artifacts/model.patch"],
+        )
+        out = ev.evaluate(self._task(tmp_path), _episode())
+        assert out.reward == 0.0
+        assert out.error is None  # a real 0, not an infra failure
+        assert "/logs/artifacts/model.patch" not in verifier.blobs
 
     def test_head_is_not_touched_when_grading_elsewhere(self, tmp_path):
         """A fresh box is already at the image's commit; the reset exists only to

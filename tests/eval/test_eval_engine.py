@@ -16,8 +16,10 @@ whether ``hooks`` are installed. This test verifies the eval path works:
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from pathlib import Path
 
+import pytest
 from rllm_model_gateway.models import TraceRecord
 
 import rllm
@@ -196,3 +198,56 @@ def test_eval_engine_runs_hook_teardown_on_success():
 
     # Setup ran, then teardown ran (success path)
     assert teardown_calls == ["setup-task-0:0", "teardown-task-0:0"]
+
+
+@pytest.mark.parametrize("attempts", [1, 2])
+@pytest.mark.parametrize("wrapped_timeout", [False, True])
+def test_run_dataset_preserves_explicit_attempts_after_verifier_timeout(attempts, wrapped_timeout):
+    """A hidden second rollout must not turn a failed attempt into a pass."""
+    from rllm.eval.runner import run_dataset
+
+    class VerifierTimeoutError(RuntimeError):
+        pass
+
+    error_type = RuntimeError if wrapped_timeout else VerifierTimeoutError
+    gateway = _FakeGateway(response_per_uid={})
+    flow_calls = Counter()
+
+    @rllm.rollout(name="submitted-then-verifier-timeout")
+    async def submitted_then_timeout(task: Task, config: AgentConfig) -> None:
+        uid = config.session_uid
+        flow_calls[uid] += 1
+        # A completed model response exists before Harbor's verifier raises.
+        gateway._responses[uid] = "submitted"
+        if flow_calls[uid] == 1:
+            raise error_type("Harbor trial failed: VerifierTimeoutError after submission")
+        # A forbidden hidden retry would instead pass the evaluator below.
+
+    task = Task(id="task-0", instruction="?", metadata={}, dataset_dir=Path("."))
+    evaluator = _StubEvaluator(ground_truth="submitted")
+    result, episodes = asyncio.run(
+        run_dataset(
+            [task],
+            submitted_then_timeout,
+            "http://unused",
+            "fake-model",
+            gateway=gateway,
+            evaluator=evaluator,
+            concurrency=1,
+            attempts=attempts,
+            sampling_params={"temperature": 1.0},
+        )
+    )
+
+    expected_uids = [f"task-0:{i}" for i in range(attempts)]
+    assert flow_calls == Counter(expected_uids)
+    assert sorted(gateway.create_calls) == expected_uids
+    assert sorted(gateway.delete_calls) == expected_uids
+    assert result.total == attempts
+    assert result.correct == 0
+    assert result.errors == attempts
+    assert [item.attempt for item in result.items] == list(range(attempts))
+    assert all(item.error == error_type.__name__ for item in result.items)
+    reason = "error" if wrapped_timeout else "verifier_timeout"
+    assert all(item.termination_reason == reason for item in result.items)
+    assert episodes == []
